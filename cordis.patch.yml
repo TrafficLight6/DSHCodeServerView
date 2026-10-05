@@ -19,7 +19,7 @@
 #       autoLogin: true
 #       # Let this plugin own code-server's process instead of assuming one runs.
 #       manage: false
-#       root: 'E:\code-server'          # release dir, or a built vendor/code-server
+#       root: 'D:\code-server'          # release dir, or a built vendor/code-server
 #       args: []                        # empty derives --bind-addr from url
 #       cwd: ''
 #       dataDir: ''                     # becomes --user-data-dir

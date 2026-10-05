@@ -22,7 +22,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/contract.test.mjs"
+    "test": "node test/contract.test.mjs && node test/docs.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"

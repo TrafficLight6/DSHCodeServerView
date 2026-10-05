@@ -148,5 +148,3 @@ vite.config.ts.timestamp-*
 # Turbo Repo
 .turbo
 
-# Local verification evidence (headless-browser screenshots of the panel)
-.verify/
