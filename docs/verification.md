@@ -1,6 +1,6 @@
 # 验证记录
 
-本文是 [README](../README.md) 的验证附录：每一项都在这台机器上实测过，截图内嵌在对应小节里（文件在图床目录 [`verification/`](verification/)）。
+本文是 [README](../README.md) 的验证附录：每一项都在这台机器上实测过。**本文件不含截图**——证据以可复核的命令输出、HTTP 响应体、子进程命令行与磁盘状态记录在此，需要复现时按各节的命令重跑即可。
 
 - 验证环境：Windows + DSH `0.2.0-rc.2`（安装版）+ code-server `4.140.0`。下文把本机路径写成占位：`<repo>` = 本仓库、`<code-server>` = code-server 安装根目录、`<temp>` = 临时目录
 - 全部在**隔离的临时 `DSH_HOME`** 里进行，未改动任何现有 profile
@@ -17,19 +17,15 @@
 
 ## 二、真实浏览器里的界面验证
 
-无头 Edge 154 + DevTools 协议驱动真实 DSH Web 客户端，按用户路径逐步走通：
+无头 Edge 154 + DevTools 协议驱动真实 DSH Web 客户端，按用户路径逐步走通；每一步都在页面里取证（DOM 查询 + 截图人工核对）：
 
 | 步骤 | 证据 |
 |---|---|
 | 客户端启动 | 页面内 `window.__DSH_BOOT__` 含本插件条目，`#root` 完成挂载 |
-| 引导页出现卡片 | 右侧栏引导页里与 DSH 自带的「工作区文件」「新建终端」并列出现 **VS Code** 卡片，标题与描述来自本插件 locale |
+| 引导页出现卡片 | 右侧栏引导页里与 DSH 自带的「工作区文件」「新建终端」并列出现第三张 **VS Code** 卡片，标题与描述来自本插件 locale |
 | 点击卡片打开面板 | 右侧栏出现原生标签页，chip 文本 `VS Code`（本插件注册的标题座位 + 自绘图标） |
-| 正文渲染 | `iframe[src="http://127.0.0.1:8080/"]`，实测尺寸 **707×757 px**，面板内渲染出 code-server 的登录页 |
-| 本地控件 | 工具条显示地址、`重新加载`、`在浏览器标签页中打开`，按钮存在于可点击元素列表中 |
-
-![引导页：与 DSH 自带的「工作区文件」「新建终端」并列的 VS Code 卡片](verification/01-guide-capsule.png)
-
-![点开后的面板：原生标签页 + iframe 里的 code-server 登录页（707×757）](verification/02-panel-code-server.png)
+| 正文渲染 | `iframe[src="http://127.0.0.1:8080/"]`，实测尺寸 **707×757 px**，面板内渲染出 code-server 的登录页（`Welcome to code-server / Please log in below`） |
+| 本地控件 | 工具条显示地址、`重新加载`、`在浏览器标签页中打开`，三个控件都出现在可点击元素列表里 |
 
 ## 三、与 `dsh-better-sidebar` 共存
 
@@ -38,10 +34,6 @@
 - 启动图里两个插件条目同时存在，两个 client bundle 都返回 200（better-sidebar 的 1.08 MB）
 - 引导页里 better-sidebar 自己的页签（`文件`、`文件变动`、`任务管理`、`侧边对话(beta)`）与本插件的 **VS Code** 卡片并列出现，互不遮挡
 - 点开 VS Code 卡片后结果与裸 profile 完全一致：`iframe[src="http://127.0.0.1:8080/"]`、**707×757 px**、渲染出 code-server 登录页
-
-![共存时的引导页：better-sidebar 的页签与本插件的 VS Code 卡片并列](verification/05-guide-with-better-sidebar.png)
-
-![共存时点开的面板：与裸 profile 表现一致](verification/04-panel-with-better-sidebar.png)
 
 ## 四、真实安装路径与运行时表现
 
@@ -70,12 +62,10 @@ dsh plugin --profile devtest add <repo>
 | 宿主装载 | 日志 `… code-server http://127.0.0.1:8081/ (auto-login configured)` |
 | 配置路由 | `GET /codeserver-view/config` → `{"url":"http://127.0.0.1:8081/","autoLogin":true,"hasPassword":true,…}` —— 响应体里**没有**密码字段 |
 | 登录路由 | `GET /codeserver-view/login` → `action="http://127.0.0.1:8081/login?to=%2F"` 的自动提交表单，密码经属性转义 |
-| 浏览器行为 | 点开 VS Code 卡片后 iframe 指向 `/codeserver-view/login`，随后 `document.cookie` 出现 `code-server-session`（`autoLoggedIn: true`），面板渲染出**已登录的 VS Code 工作台** |
+| 浏览器行为 | 点开 VS Code 卡片后 iframe 指向 `/codeserver-view/login`，随后 `document.cookie` 出现 `code-server-session`（`autoLoggedIn: true`），面板渲染出**已登录的 VS Code 工作台**而不是登录表单 |
 | 工具条 | 显示配置的地址 `http://127.0.0.1:8081/`（而不是登录路由） |
 | 反例 | 用错密码时 code-server 的 `/login` 返回 200 登录页（curl 单独确认），面板于是显示登录表单而不是白屏 |
 | 配置热更新 | 把补丁里的 `url` 从 8081 改成 8080 并保存，**4 秒后**运行中实例的 `/codeserver-view/config` 就返回新地址（HMR 热替换宿主半部，无需重启）；改**插件源码**则必须重启（已实测区分） |
-
-![自动登录生效：面板直接进已登录的 VS Code 工作台，工具条显示配置的地址](verification/06-config-autologin.png)
 
 ## 六、进程托管
 
@@ -91,8 +81,6 @@ dsh plugin --profile devtest add <repo>
 | 重启 | `POST /codeserver-view/restart` → 旧进程 9128 消失、新进程 27324 起来、端口重新 200，返回的 status `uptimeMs: 0` |
 | 不留孤儿 | 只 `Stop-Process` 掉 DSH 宿主进程（**不做树杀**），2 秒内 code-server 随之消失、端口释放 —— Job Object 的 kill-on-close 生效，无需 `stopOnUnload` |
 
-![托管模式的面板：底部是地址、运行中徽标、重新加载与重启按钮（也是 README 的头图）](verification/07-managed-panel.png)
-
 ## 七、Copilot 禁用层
 
 隔离实例：`manage: true` + `copilot.disable: true` + 独立 `dataDir`/`workDir`。
@@ -107,9 +95,7 @@ dsh plugin --profile devtest add <repo>
 | 幂等 | 第二次启动指纹未变 → **不重建**（日志无 rebuild 行），`builtin-extensions` 下只有一个指纹目录 |
 | 安全护栏 | 把 `workDir` 指到安装目录或插件包内 → 状态 `unsafe-work-dir`，**什么都没创建** |
 | **VS Code 自己的解析结果** | 客户端连上后 VS Code 重新生成的 `extensions.builtin.cache`：**94 个内置扩展，id 含 "copilot" 的数量为 0**，且所有 location 都指向过滤目录 |
-| 界面 | 工作台活动栏**没有 Chat/Copilot 图标**、右侧**没有 Chat 面板**、欢迎页**没有 "Build with Agent" 卡片** |
-
-![禁用 Copilot 后的工作台：没有 Chat 面板、活动栏没有 Copilot 图标、欢迎页没有 Build with Agent 卡片](verification/08-copilot-disabled.png)
+| 界面 | 工作台活动栏**没有 Chat/Copilot 图标**、右侧**没有 Chat 面板**、欢迎页**没有 "Build with Agent" 卡片**（用同一实例在开启该层前后各跑一次同一段脚本比对） |
 
 ## 八、升级后不变的东西
 

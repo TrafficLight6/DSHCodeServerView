@@ -39,21 +39,25 @@ const contract = read('test/contract.test.mjs')
 /** Absolute paths that would only be valid on the machine this was written on. */
 const MACHINE_PATH = /(?:[A-Za-z]:[\\/]Users[\\/]|E:[\\/])/u
 
-/** Extensions treated as text; the screenshots and anything else are left alone. */
+/** Extensions treated as text; anything else is a binary asset. */
 const TEXT_FILE = /(?:\.(?:md|js|mjs|cjs|json|yml|yaml|svg|txt|html|css)|(?:^|[\\/])(?:LICENSE|\.gitignore|\.gitmodules))$/u
 
+/** Bitmap formats; the documentation is deliberately text-only, so none may appear. */
+const BITMAP_FILE = /\.(?:png|jpe?g|gif|webp|bmp|ico|tiff?)$/iu
+
 /**
- * List the repository's text files, skipping the pieces that are not ours.
+ * List the repository's files, skipping the pieces that are not ours.
  * @param directory - the directory to walk.
- * @returns absolute paths of text files.
+ * @param keep - a predicate on the file name.
+ * @returns absolute paths.
  */
-function textFiles(directory) {
+function walkFiles(directory, keep = () => true) {
   const found = []
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     if (entry.name === '.git' || entry.name === 'node_modules' || entry.name === 'vendor') continue
     const path = join(directory, entry.name)
-    if (entry.isDirectory()) found.push(...textFiles(path))
-    else if (TEXT_FILE.test(entry.name)) found.push(path)
+    if (entry.isDirectory()) found.push(...walkFiles(path, keep))
+    else if (keep(entry.name)) found.push(path)
   }
   return found
 }
@@ -117,7 +121,7 @@ check('every text file is UTF-8 without a BOM and without replacement characters
   // silently corrupts CJK text and can swallow trailing punctuation, so this
   // guards the whole tree rather than only the two documents.
   const suspicious = []
-  for (const file of textFiles(packageDir)) {
+  for (const file of walkFiles(packageDir, (name) => TEXT_FILE.test(name))) {
     const bytes = readFileSync(file)
     const relative = file.slice(packageDir.length + 1)
     if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) suspicious.push(`${relative} (BOM)`)
@@ -126,18 +130,14 @@ check('every text file is UTF-8 without a BOM and without replacement characters
   if (suspicious.length > 0) throw new Error(suspicious.join(', '))
 })
 
-check('the documentation ships and embeds every screenshot it references', () => {
-  const referenced = new Set([...verification.matchAll(/verification\/([\w.-]+\.png)/g)].map((match) => match[1]))
-  if (referenced.size === 0) throw new Error('the verification record references no screenshots')
-  // A bare link renders as text, not as a picture: every reference must be an image.
-  const embedded = new Set([...verification.matchAll(/!\[[^\]]*\]\(verification\/([\w.-]+\.png)\)/g)].map((match) => match[1]))
-  const linkedOnly = [...referenced].filter((name) => !embedded.has(name))
-  if (linkedOnly.length > 0) throw new Error(`linked but not embedded, so they never render: ${linkedOnly.join(', ')}`)
-  const missing = [...referenced].filter((name) => !existsSync(join(packageDir, 'docs', 'verification', name)))
-  if (missing.length > 0) throw new Error(missing.join(', '))
-  const shipped = readdirSync(join(packageDir, 'docs', 'verification')).filter((name) => name.endsWith('.png'))
-  const orphans = shipped.filter((name) => !referenced.has(name))
-  if (orphans.length > 0) throw new Error(`shipped but unreferenced: ${orphans.join(', ')}`)
+check('the repository ships no bitmap assets', () => {
+  // The documentation is deliberately text-only: evidence is written down as
+  // commands, responses and file states instead of screenshots, so a stray
+  // image would mean something was committed by accident.
+  const images = walkFiles(packageDir, (name) => BITMAP_FILE.test(name))
+  if (images.length > 0) {
+    throw new Error(images.map((file) => file.slice(packageDir.length + 1)).join(', '))
+  }
 })
 
 check('no documentation carries a path from one specific machine', () => {
@@ -160,7 +160,8 @@ check('claims that were corrected do not come back', () => {
     '只打印一行日志',            // index.js has not been a one-line logger since 1.1
     '未做 code-server 健康检查', // the supervisor probes healthPath
     'two loopback-only routes',  // there are three
-    '.verify/',                  // evidence moved to docs/verification/
+    '.verify/',                  // evidence lives in docs/verification.md now
+    'docs/verification/',        // the screenshots were removed on purpose
   ]
   const found = stale.filter((phrase) => readme.includes(phrase))
   if (found.length > 0) throw new Error(found.join(' | '))
