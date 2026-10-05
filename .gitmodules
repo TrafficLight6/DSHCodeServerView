@@ -1,0 +1,3 @@
+[submodule "vendor/code-server"]
+	path = vendor/code-server
+	url = https://github.com/coder/code-server

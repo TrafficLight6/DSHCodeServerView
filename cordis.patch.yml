@@ -1,0 +1,45 @@
+# Bundle patch layer of DSHCodeServerView.
+#
+# Installing this package into a profile selects it as a bundle; the profile
+# boot then merges this layer, which mounts the plugin's Host half. The browser
+# half needs no row of its own: the `dsh.client` declaration in package.json
+# puts it into the boot graph that the Client module registry composes.
+#
+# The config keys are optional; the Host half exports their defaults.
+# Override them from a later layer (a profile's own cordis.patch.yml, the
+# home-level patch, or a --patch overlay) by restating the row — a patch
+# replaces the whole `config` value, so restate every key you need:
+#
+#   - id: code-server-view
+#     name: 'DSHCodeServerView'
+#     config:
+#       # Where the panel points, and how it logs in.
+#       url: 'http://127.0.0.1:8080/'
+#       password: 'your-code-server-password'
+#       autoLogin: true
+#       # Let this plugin own code-server's process instead of assuming one runs.
+#       manage: false
+#       root: 'E:\code-server'          # release dir, or a built vendor/code-server
+#       args: []                        # empty derives --bind-addr from url
+#       cwd: ''
+#       dataDir: ''                     # becomes --user-data-dir
+#       healthPath: '/healthz'
+#       startTimeoutMs: 30000
+#       graceMs: 8000
+#       restart: 'on-failure'           # never | on-failure
+#       stopOnUnload: false             # the DSH lifetime owns the process
+#
+# `url` is the code-server address (scheme and trailing slash are added when
+# missing). `password` is the code-server password: it stays in the Host, which
+# uses it to log the browser in through a loopback-only page, so the panel opens
+# already authenticated. `autoLogin: false` keeps the password configured but
+# leaves code-server's own login page in place.
+#
+# With `manage: true` the Host half probes `url` first and adopts whatever
+# answers; only when nothing answers does it spawn `root` (defaulting to the
+# vendored `vendor/code-server` submodule once that has been built), waiting for
+# `healthPath` and passing the password through the child's environment rather
+# than its command line.
+- insert:
+    - id: code-server-view
+      name: 'DSHCodeServerView'

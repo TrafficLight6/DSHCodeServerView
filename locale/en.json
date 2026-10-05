@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "VS Code (code-server)",
+    "description": "Embeds a running code-server (VS Code Web) instance as a right-sidebar tab, so files and terminals can be edited next to the conversation."
+  }
+}

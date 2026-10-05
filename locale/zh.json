@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "VS Code（code-server）",
+    "description": "把运行中的 code-server（VS Code 网页版）作为右侧栏标签页内嵌进 DSH，可以在对话旁边直接编辑文件、使用终端。"
+  }
+}
