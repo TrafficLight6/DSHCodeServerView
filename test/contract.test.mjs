@@ -24,6 +24,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const clientPath = fileURLToPath(new URL('../client.js', import.meta.url))
 const indexPath = fileURLToPath(new URL('../index.js', import.meta.url))
 const supervisorPath = fileURLToPath(new URL('../supervisor.js', import.meta.url))
+const copilotPath = fileURLToPath(new URL('../copilot.js', import.meta.url))
 const manifestPath = fileURLToPath(new URL('../package.json', import.meta.url))
 const packageDir = dirname(manifestPath)
 
@@ -400,48 +401,31 @@ const schemaStub = {
   union: (options) => ({ default: (value) => ({ kind: 'union', options, default: value }) }),
 }
 
-// The Host half is two modules. Both run as scripts with their imports stubbed,
-// so the test drives the real code without a bundler or an installed profile.
-const supervisorSource = readFileSync(supervisorPath, 'utf8')
-  .replace(/^import .*$/gm, '')
-  .replaceAll('import.meta.url', '__moduleUrl')
-  .replace(/^export /gm, '')
-
-const supervisorSandbox = {
-  console: { log() {} },
-  URL,
-  process,
-  AbortController,
-  setTimeout,
-  clearTimeout,
-  existsSync,
-  readFileSync,
-  join,
-  fileURLToPath,
-  __moduleUrl: pathToFileURL(supervisorPath).href,
-}
-runInContext(
-  `${supervisorSource}
-globalThis.__supervisor = { createSupervisor, isRunnableRoot, launcherFor, versionOf, VENDORED_ROOT }`,
-  createContext(supervisorSandbox),
-  { filename: 'supervisor.js' },
-)
-const supervisorModule = supervisorSandbox.__supervisor
+// Both dependency-free halves are real modules, so import them directly; only
+// index.js needs a sandbox, because its Schemastery import is replaced by a stub.
+const supervisorModule = await import(pathToFileURL(supervisorPath).href)
+const copilotModule = await import(pathToFileURL(copilotPath).href)
 
 const hostSandbox = {
   console: { log() {} },
   URL,
   Buffer,
   process,
+  __nodeUrl: { fileURLToPath },
+  __moduleUrl: pathToFileURL(indexPath).href,
   __schemaStub: schemaStub,
   __supervisor: supervisorModule,
+  __copilot: copilotModule,
 }
 runInContext(
   `${readFileSync(indexPath, 'utf8')
     .replace("import Schema from '@deepseek-ai/schemastery'", 'const Schema = __schemaStub')
+    .replace("import { fileURLToPath } from 'node:url'", 'const { fileURLToPath } = __nodeUrl')
+    .replace("import { createCopilotGuard } from './copilot.js'", 'const { createCopilotGuard } = __copilot')
     .replace("import { createSupervisor, VENDORED_ROOT } from './supervisor.js'", 'const { createSupervisor, VENDORED_ROOT } = __supervisor')
+    .replaceAll('import.meta.url', '__moduleUrl')
     .replace(/^export /gm, '')}
-globalThis.__host = { Config, apply, name, DEFAULT_URL }`,
+globalThis.__host = { Config, apply, name, DEFAULT_URL, PLUGIN_DIR }`,
   createContext(hostSandbox),
   { filename: 'index.js' },
 )
@@ -798,6 +782,188 @@ await checkAsync('stopOnUnload terminates the managed range', async () => {
   await supervisorEffect.dispose()
   assert.equal(service.handles[0].terminated, true)
   assert.equal(service.handles[0].waited, true)
+})
+
+// --------------------------------------------------------------- the Copilot guard
+
+/**
+ * Build a code-server-shaped fixture: an installation with built-in extensions,
+ * a user data directory with settings and caches, and a work directory beside
+ * the installation (never inside it, which the guard refuses).
+ * @param name - a label used in the directory name.
+ * @returns the fixture paths.
+ */
+function makeCopilotFixture(name) {
+  const base = mkdtempSync(join(tmpdir(), `dsh-copilot-${name}-`))
+  process.on('exit', () => { rmSync(base, { recursive: true, force: true }) })
+  const root = join(base, 'code-server')
+  const extensions = join(root, 'lib', 'vscode', 'extensions')
+  const write = (relative, body) => {
+    const file = join(base, 'localappdata', 'code-server', 'Data', relative)
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body))
+  }
+  const writeExtension = (directory, manifest) => {
+    const file = join(extensions, directory, 'package.json')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify(manifest))
+  }
+  writeExtension('copilot', { publisher: 'GitHub', name: 'copilot-chat', version: '0.68.0' })
+  writeExtension('github-authentication', { publisher: 'GitHub', name: 'github-authentication', version: '0.1.0' })
+  writeExtension('python', { publisher: 'ms-python', name: 'python', version: '2026.1.0' })
+  mkdirSync(join(extensions, 'mystery'), { recursive: true })
+  write(join('User', 'settings.json'), '{\n  // keep this comment\n  "workbench.colorTheme": "Dark 2026"\n}\n')
+  write(join('User', 'globalStorage', 'github.copilot-chat', 'cache.json'), '{}')
+  write(join('User', 'globalStorage', 'other.extension', 'keep.json'), '{}')
+  write(join('User', 'customBuiltinExtensionsCache.json'), '[]')
+  write(join('CachedProfilesData', '__default__profile__', 'extensions.builtin.cache'), '{}')
+  return {
+    base,
+    root,
+    extensions,
+    work: join(base, 'work'),
+    data: join(base, 'localappdata', 'code-server', 'Data'),
+  }
+}
+
+/**
+ * Build a guard bound to one fixture.
+ * @param fixture - the fixture paths.
+ * @param config - the Copilot configuration to test.
+ * @returns the guard.
+ */
+function guardFor(fixture, config) {
+  return copilotModule.createCopilotGuard({
+    config: { workDir: fixture.work, ...config },
+    root: fixture.root,
+    pluginDir: packageDir,
+    platform: 'win32',
+    env: { LOCALAPPDATA: join(fixture.base, 'localappdata') },
+    home: fixture.base,
+  })
+}
+
+await checkAsync('the Copilot guard does nothing until it is switched on', async () => {
+  const fixture = makeCopilotFixture('off')
+  const result = await guardFor(fixture, { disable: false }).apply({ root: fixture.root, dataDir: '' })
+  assert.deepEqual(result.args, [], 'no argument is contributed while disabled')
+  assert.equal(existsSync(fixture.work), false, 'no work directory is created while disabled')
+  const settings = join(fixture.data, 'User', 'settings.json')
+  assert.equal(readFileSync(settings, 'utf8'), '{\n  // keep this comment\n  "workbench.colorTheme": "Dark 2026"\n}\n',
+    'the settings file is byte-identical: nothing was written')
+  assert.equal(existsSync(`${settings}.dsh-backup`), false)
+})
+
+await checkAsync('the guard filters built-in extensions by manifest identity', async () => {
+  const fixture = makeCopilotFixture('filter')
+  const result = await guardFor(fixture, { disable: true }).apply({ root: fixture.root, dataDir: '' })
+  assert.equal(result.args[0], '--builtin-extensions-dir')
+  const filtered = result.args[1]
+  assert.ok(filtered.startsWith(fixture.work), 'the filtered directory lives in workDir')
+
+  const linked = readdirSync(filtered).filter((name) => name !== 'manifest.json').sort()
+  assert.deepEqual(linked, ['github-authentication', 'mystery', 'python'],
+    'every built-in except Copilot is linked, including one whose manifest cannot be read')
+  assert.equal(linked.includes('copilot'), false, 'the Copilot extension is not present at all')
+
+  const manifest = JSON.parse(readFileSync(join(filtered, 'manifest.json'), 'utf8'))
+  assert.deepEqual(manifest.excluded, ['GitHub.copilot-chat'])
+  assert.equal(result.status.excluded.includes('GitHub.copilot-chat'), true)
+  assert.equal(result.status.builtinDir, filtered)
+})
+
+await checkAsync('a publisher rule removes that publisher without touching others', async () => {
+  const fixture = makeCopilotFixture('publisher')
+  const result = await guardFor(fixture, { disable: true, excludePublishers: ['github'] })
+    .apply({ root: fixture.root, dataDir: '' })
+  const linked = readdirSync(result.args[1]).filter((name) => name !== 'manifest.json').sort()
+  assert.deepEqual(linked, ['mystery', 'python'], 'both GitHub extensions are gone, the rest stay')
+})
+
+await checkAsync('the guard rebuilds itself when the installation changes', async () => {
+  const fixture = makeCopilotFixture('upgrade')
+  const first = await guardFor(fixture, { disable: true }).apply({ root: fixture.root, dataDir: '' })
+  writeFileSync(join(fixture.extensions, 'python', 'package.json'),
+    JSON.stringify({ publisher: 'ms-python', name: 'python', version: '2026.2.0' }))
+
+  const second = await guardFor(fixture, { disable: true }).apply({ root: fixture.root, dataDir: '' })
+  assert.notEqual(second.args[1], first.args[1], 'an upgrade produces a new filtered directory')
+  const kept = readdirSync(join(fixture.work, 'builtin-extensions'))
+  assert.deepEqual(kept, [second.args[1].split(/[\\/]/u).pop()], 'only the fingerprint in use is kept')
+  assert.equal(existsSync(first.args[1]), false, 'the stale directory is removed')
+})
+
+await checkAsync('settings are merged without losing the user keys', async () => {
+  const fixture = makeCopilotFixture('settings')
+  const file = join(fixture.data, 'User', 'settings.json')
+  const result = await guardFor(fixture, { disable: true, builtinExtensions: false })
+    .apply({ root: fixture.root, dataDir: '' })
+
+  assert.equal(result.dataDir, fixture.data, 'an unpinned data directory resolves to code-server’s default')
+  const merged = JSON.parse(readFileSync(file, 'utf8'))
+  assert.equal(merged['workbench.colorTheme'], 'Dark 2026', 'the user value survives')
+  assert.equal(merged['chat.disableAIFeatures'], true)
+  assert.equal(merged['chat.commandCenter.enabled'], false)
+  assert.deepEqual(merged['github.copilot.enable'], { '*': false })
+  assert.equal(result.status.settingsWritten, true)
+
+  const backup = readFileSync(`${file}.dsh-backup`, 'utf8')
+  assert.match(backup, /keep this comment/, 'the original file is backed up verbatim')
+})
+
+await checkAsync('an unparsable settings file is reported and left untouched', async () => {
+  const fixture = makeCopilotFixture('broken')
+  const file = join(fixture.data, 'User', 'settings.json')
+  writeFileSync(file, '{ this is not json')
+  const result = await guardFor(fixture, { disable: true, builtinExtensions: false })
+    .apply({ root: fixture.root, dataDir: '' })
+  assert.equal(result.status.settingsWritten, false)
+  assert.equal(result.status.reason, 'unparsable')
+  assert.equal(readFileSync(file, 'utf8'), '{ this is not json', 'the file is never rewritten')
+})
+
+await checkAsync('the fill policy respects a value the user already set', async () => {
+  const fixture = makeCopilotFixture('policy')
+  const file = join(fixture.data, 'User', 'settings.json')
+  writeFileSync(file, JSON.stringify({ 'chat.disableAIFeatures': false }))
+  await guardFor(fixture, { disable: true, builtinExtensions: false, settingsPolicy: 'fill' })
+    .apply({ root: fixture.root, dataDir: '' })
+  assert.equal(JSON.parse(readFileSync(file, 'utf8'))['chat.disableAIFeatures'], false)
+
+  await guardFor(fixture, { disable: true, builtinExtensions: false, settingsPolicy: 'enforce' })
+    .apply({ root: fixture.root, dataDir: '' })
+  assert.equal(JSON.parse(readFileSync(file, 'utf8'))['chat.disableAIFeatures'], true)
+})
+
+await checkAsync('Copilot leftovers and the extension caches are purged, nothing else', async () => {
+  const fixture = makeCopilotFixture('purge')
+  const result = await guardFor(fixture, { disable: true, builtinExtensions: false })
+    .apply({ root: fixture.root, dataDir: '' })
+  assert.equal(existsSync(join(fixture.data, 'User', 'globalStorage', 'github.copilot-chat')), false)
+  assert.equal(existsSync(join(fixture.data, 'User', 'customBuiltinExtensionsCache.json')), false)
+  assert.equal(existsSync(join(fixture.data, 'CachedProfilesData', '__default__profile__', 'extensions.builtin.cache')), false)
+  assert.equal(existsSync(join(fixture.data, 'User', 'globalStorage', 'other.extension', 'keep.json')), true,
+    'unrelated state survives')
+  assert.equal(result.status.purged.length, 3)
+})
+
+await checkAsync('a work directory inside the installation or the package is refused', async () => {
+  const fixture = makeCopilotFixture('unsafe')
+  const insideInstall = await copilotModule.createCopilotGuard({
+    config: { disable: true, workDir: join(fixture.root, 'lib', 'derived') },
+    root: fixture.root,
+    pluginDir: packageDir,
+  }).apply({ root: fixture.root, dataDir: '' })
+  assert.equal(insideInstall.status.reason, 'unsafe-work-dir')
+  assert.equal(existsSync(join(fixture.root, 'lib', 'derived')), false, 'nothing is created inside the installation')
+
+  const insidePackage = await copilotModule.createCopilotGuard({
+    config: { disable: true, workDir: join(packageDir, '.derived') },
+    root: fixture.root,
+    pluginDir: packageDir,
+  }).apply({ root: fixture.root, dataDir: '' })
+  assert.equal(insidePackage.status.reason, 'unsafe-work-dir')
+  assert.equal(existsSync(join(packageDir, '.derived')), false, 'nothing is created inside the plugin package')
 })
 
 rmSync(fixtureRoot, { recursive: true, force: true })

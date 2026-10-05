@@ -25,10 +25,15 @@
  * @module DSHCodeServerView
  */
 import Schema from '@deepseek-ai/schemastery'
+import { fileURLToPath } from 'node:url'
+import { createCopilotGuard } from './copilot.js'
 import { createSupervisor, VENDORED_ROOT } from './supervisor.js'
 
 /** Loader-row identity of this bundle's Host half. */
 export const name = 'DSHCodeServerView'
+
+/** This package's own directory, used to keep derived files outside it. */
+export const PLUGIN_DIR = fileURLToPath(new URL('.', import.meta.url))
 
 /** code-server instance framed by a tab that carries no explicit URL. */
 export const DEFAULT_URL = 'http://127.0.0.1:8080/'
@@ -65,6 +70,28 @@ export const Config = Schema.object({
   restart: Schema.union(['never', 'on-failure']).default('on-failure'),
   /** Stop the process when the plugin unloads; false leaves it to the DSH lifetime. */
   stopOnUnload: Schema.boolean().default(false),
+
+  /** Derived files (the filtered built-in extensions) live here; empty picks a user cache directory. */
+  workDir: Schema.string().default(''),
+  /** Keep code-server's built-in Copilot out of the spawned instance. */
+  copilot: Schema.object({
+    /** Master switch; false leaves code-server exactly as shipped. */
+    disable: Schema.boolean().default(false),
+    /** Lever 1: run code-server against a built-in extensions directory without Copilot. */
+    builtinExtensions: Schema.boolean().default(true),
+    /** Extensions to leave out, matched by `publisher.name` (case-insensitive). */
+    exclude: Schema.array(Schema.string()).default(['GitHub.copilot-chat', 'GitHub.copilot']),
+    /** Publishers to leave out entirely; empty keeps GitHub's non-Copilot extensions. */
+    excludePublishers: Schema.array(Schema.string()).default([]),
+    /** Lever 2: merge the AI-off settings block into the user settings. */
+    settings: Schema.boolean().default(true),
+    /** `enforce` also overrides a conflicting value; `fill` only adds missing keys. */
+    settingsPolicy: Schema.union(['enforce', 'fill']).default('enforce'),
+    /** Lever 3: remove Copilot leftovers and the extension caches. */
+    purgeCaches: Schema.boolean().default(true),
+    /** Also remove the BYOK chat-model registry (`chatLanguageModels.json`). */
+    purgeChatModels: Schema.boolean().default(false),
+  }),
 })
 
 /** Path prefix this plugin owns on the Web carrier. */
@@ -222,10 +249,21 @@ export function apply(ctx, config) {
       const service = serviceOf('subprocess')
       return service === undefined ? undefined : service.resolveExecutable(executable)
     },
+    // The Copilot guard runs inside the spawn path: it may pin the data
+    // directory and contribute `--builtin-extensions-dir`.
+    prepareSpawn: ({ root, dataDir }) => createCopilotGuard({
+      config: {
+        ...(config?.copilot ?? {}),
+        workDir: typeof config?.workDir === 'string' ? config.workDir : '',
+      },
+      root,
+      pluginDir: PLUGIN_DIR,
+      log: (line) => { console.log(line) },
+    }).apply({ root, dataDir }),
     log: (line) => { console.log(line) },
   })
 
-  console.log(`[code-server-view] host half mounted; code-server ${base.href}${password.length > 0 && autoLogin ? ' (auto-login configured)' : ''}${password.length > 0 && !autoLogin ? ' (password configured, auto-login off)' : ''}${manage ? ` (managing the process; vendored submodule at ${VENDORED_ROOT})` : ''}`)
+  console.log(`[code-server-view] host half mounted; code-server ${base.href}${password.length > 0 && autoLogin ? ' (auto-login configured)' : ''}${password.length > 0 && !autoLogin ? ' (password configured, auto-login off)' : ''}${manage ? ` (managing the process; vendored submodule at ${VENDORED_ROOT})` : ''}${config?.copilot?.disable === true ? ' (Copilot disabled for the spawned instance)' : ''}`)
 
   ctx.effect(() => {
     void supervisor.ensureRunning()

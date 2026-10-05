@@ -103,6 +103,7 @@ export function createSupervisor(options) {
     fetchImpl = globalThis.fetch,
     spawnProcess,
     resolveExecutable,
+    prepareSpawn,
     log = () => {},
     exists = existsSync,
     read = readFileSync,
@@ -131,6 +132,7 @@ export function createSupervisor(options) {
     exitCode: undefined,
     restarts: 0,
     message: undefined,
+    copilot: undefined,
   }
 
   let handle
@@ -178,15 +180,14 @@ export function createSupervisor(options) {
   }
 
   /** Arguments handed to code-server when the configuration names none. */
-  function launcherArgs() {
+  function launcherArgs(dataDir) {
     const configured = Array.isArray(config.args) ? config.args.filter((value) => typeof value === 'string') : []
     const args = [...configured]
     if (args.length === 0) {
       const parsed = new URL(base)
       args.push('--bind-addr', `${parsed.hostname}:${parsed.port.length > 0 ? parsed.port : '8080'}`)
     }
-    const dataDir = typeof config.dataDir === 'string' ? config.dataDir.trim() : ''
-    if (dataDir.length > 0) args.push('--user-data-dir', dataDir)
+    if (typeof dataDir === 'string' && dataDir.length > 0) args.push('--user-data-dir', dataDir)
     return args
   }
 
@@ -236,6 +237,23 @@ export function createSupervisor(options) {
     // Passed through the environment, never argv: a process list is public.
     if (password.length > 0) env.PASSWORD = password
 
+    // Preparation runs before the spawn: it may pin the data directory and add
+    // arguments (the Copilot guard contributes --builtin-extensions-dir).
+    let dataDir = typeof config.dataDir === 'string' ? config.dataDir.trim() : ''
+    let preparedArgs = []
+    state.copilot = undefined
+    if (typeof prepareSpawn === 'function') {
+      try {
+        const prepared = await prepareSpawn({ root: resolved.root, dataDir, version: state.version })
+        if (typeof prepared?.dataDir === 'string' && prepared.dataDir.length > 0) dataDir = prepared.dataDir
+        if (Array.isArray(prepared?.args)) preparedArgs = prepared.args
+        state.copilot = prepared?.status
+      } catch (error) {
+        state.copilot = { applied: false, reason: `failed: ${String(error?.message ?? error)}` }
+        log(`[code-server-view] spawn preparation failed: ${String(error?.message ?? error)}`)
+      }
+    }
+
     state.state = 'starting'
     state.message = undefined
     state.exitCode = undefined
@@ -243,7 +261,7 @@ export function createSupervisor(options) {
 
     try {
       handle = spawnProcess({
-        argv: [launcher.program, ...launcher.argv, ...launcherArgs()],
+        argv: [launcher.program, ...launcher.argv, ...launcherArgs(dataDir), ...preparedArgs],
         cwd: typeof config.cwd === 'string' && config.cwd.trim().length > 0 ? config.cwd : resolved.root,
         env,
         stdio: { stdin: 'ignore', stdout: { maxBytes: 32 * 1024 }, stderr: { maxBytes: 32 * 1024 } },
@@ -423,6 +441,7 @@ export function createSupervisor(options) {
         exitCode: state.exitCode,
         restarts: state.restarts,
         message: state.message,
+        copilot: state.copilot,
         uptimeMs: runningSince === undefined || state.state !== 'running' ? undefined : now() - runningSince,
       }
     },

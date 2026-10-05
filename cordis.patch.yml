@@ -28,6 +28,20 @@
 #       graceMs: 8000
 #       restart: 'on-failure'           # never | on-failure
 #       stopOnUnload: false             # the DSH lifetime owns the process
+#       # Keep code-server's built-in Copilot out of the spawned instance.
+#       # No fork and no change to the installation: the guard links every other
+#       # built-in into its own directory and passes --builtin-extensions-dir,
+#       # merges the AI-off settings block, and clears Copilot's leftovers.
+#       copilot:
+#         disable: true
+#         builtinExtensions: true
+#         exclude: ['GitHub.copilot-chat', 'GitHub.copilot']
+#         excludePublishers: []
+#         settings: true
+#         settingsPolicy: 'enforce'     # enforce | fill
+#         purgeCaches: true
+#         purgeChatModels: false
+#       workDir: ''                     # derived files; empty = a user cache directory
 #
 # `url` is the code-server address (scheme and trailing slash are added when
 # missing). `password` is the code-server password: it stays in the Host, which

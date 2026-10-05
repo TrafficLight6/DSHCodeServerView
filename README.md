@@ -122,6 +122,43 @@ ctx.sidebarRight.openTab('code-server-view', { params: { url: 'http://127.0.0.1:
 3. **收尾靠 Job Object，不靠插件**：DSH 的子进程服务把子进程放进 Windows kill-on-close Job，`terminate()` + `waitForExit()` 覆盖整棵进程树。所以默认 `stopOnUnload: false`——**改配置触发 HMR 重载时不会把你的 IDE 杀掉重启**；而 DSH 进程真正退出时，Job 关闭会连带收走 code-server，不留孤儿。
 4. **面板**：工具条显示 `运行中 / 已接管现有实例 / 正在启动 / 已退出 / 启动失败` 状态徽标与 `重启 code-server` 按钮（走 `POST /codeserver-view/restart`，它 terminate + waitForExit 后重新 spawn）。启动中面板显示占位而不是去 frame 一个还没监听的端口。
 
+### 自动干掉 code-server 的 Copilot（可选）
+
+code-server 把 GitHub Copilot Chat 作为**内置扩展**随 VS Code 一起装进来——既不能在扩展面板里卸载，也不能用 `--disable-extension`（code-server 的 CLI 对表外选项直接报 `Unknown option`，我实测确认过）。所以插件用的是三条**不需要 fork、也不改发行版**的杠杆：
+
+| 杠杆 | 做法 | 写在哪 |
+|---|---|---|
+| 1 过滤内置扩展 | 把 `<root>/lib/vscode/extensions` 里除 Copilot 之外的扩展用 junction 链到自己的目录，启动时传 `--builtin-extensions-dir` → Copilot **根本没被加载** | 插件的 `workDir`（派生的 junction 集合） |
+| 2 设置 | 合并写入 `chat.disableAIFeatures`、`chat.commandCenter.enabled: false`、`workbench.secondarySideBar.defaultVisibility: hidden`、`github.copilot.enable: {"*": false}`、`telemetry.telemetryLevel: off` | code-server 数据目录的 `User/settings.json` |
+| 3 清残留 | 删 `User/globalStorage/github.copilot*`、`CachedProfilesData/*/extensions.builtin.cache`、两个内置扩展缓存 | code-server 数据目录 |
+
+```yaml
+- id: code-server-view
+  name: 'DSHCodeServerView'
+  config:
+    manage: true
+    root: 'E:\code-server'
+    dataDir: 'C:\Users\you\code-server-data'
+    copilot:
+      disable: true                  # 总开关，默认 false（完全不动）
+      builtinExtensions: true        # 杠杆 1
+      exclude: ['GitHub.copilot-chat', 'GitHub.copilot']
+      excludePublishers: []          # 例如填 ['GitHub'] 会连 GitHub 认证一起摘掉（会影响 git 登录）
+      settings: true                 # 杠杆 2
+      settingsPolicy: 'enforce'      # enforce 覆盖冲突值；fill 只补缺失键
+      purgeCaches: true              # 杠杆 3
+      purgeChatModels: false         # 是否连 BYOK 模型登记（chatLanguageModels.json）一起删
+    workDir: ''                      # 派生文件位置；默认 $DSH_HOME\cache\code-server-view
+```
+
+几个刻意的设计决定：
+
+- **只在托管模式生效**：插件得自己 spawn 才能决定 argv 与数据目录；attach（接管你手动起的实例）时什么都不动，状态里写明原因。
+- **升级自愈**：过滤目录是**派生数据**，指纹由「源目录条目 + 每个扩展的 `id@版本` + 排除名单」算出。你换 code-server 版本（换子模块 tag 或覆盖安装）后指纹变化 → 下次启动自动重建，旧目录清掉。设置与缓存在数据目录里，不受安装覆盖影响。
+- **按扩展 id 匹配**：读每个候选目录的 `package.json` 取 `publisher.name`，所以上游改目录名也照样命中；**读不出清单的目录一律保留**（不认识的东西绝不动）。
+- **安全护栏**：`workDir` 若落在插件包内或 code-server 安装目录内，插件**拒绝执行**并在状态里报 `unsafe-work-dir`——保证不往你的仓库或发行版里写任何东西。
+- **设置是合并不是覆盖**：JSONC（允许注释）容错解析；解析失败就**放弃写入并报告**，绝不改写你的文件；首次写入前留一份 `settings.json.dsh-backup`。
+
 ### code-server 从哪来：Git Submodule
 
 本仓库用 **`vendor/code-server` 子模块**钉住 code-server 的版本，而不是把上游代码抄进来：
@@ -252,6 +289,20 @@ dsh plugin --profile devtest add E:\it-project\DSHCodeServerView
 | 重启 | `POST /codeserver-view/restart` → 旧进程 9128 消失、新进程 27324 起来、8082 重新 200，返回的 status `uptimeMs: 0` |
 | 不留孤儿 | 只 `Stop-Process` 掉 DSH 宿主进程（不做树杀），2 秒内 code-server 随之消失、8082 down —— Job Object 的 kill-on-close 生效，无需 `stopOnUnload` |
 
+**七、Copilot 禁用层的端到端验证**（隔离实例：`manage: true` + `copilot.disable: true` + 独立 `dataDir`/`workDir`）
+
+| 观察项 | 结果 |
+|---|---|
+| 宿主日志 | `built-in extensions filtered: 95 kept, 1 removed (GitHub.copilot-chat)` |
+| spawn argv | `… --user-data-dir <data> --builtin-extensions-dir …\work\builtin-extensions\afc76cb5ee3571af` |
+| 过滤目录 | 95 个 junction，**没有 `copilot` 条目**；`manifest.json` 记录 `excluded: ["GitHub.copilot-chat"]` |
+| 设置 | `<data>\User\settings.json` 合并为 AI-off 五键（原文件先备份成 `settings.json.dsh-backup`） |
+| 残留清理 | 预置的三处残留（`User/globalStorage/github.copilot-chat`、`extensions.builtin.cache`、`customBuiltinExtensionsCache.json`）被逐个报告并删除；无关状态原样保留 |
+| 幂等 | 第二次启动指纹未变 → **不重建**（日志无 rebuild 行），`builtin-extensions` 下只有一个指纹目录 |
+| 安全护栏 | 把 `workDir` 指到安装目录/插件包内 → 状态 `unsafe-work-dir`，**什么都没创建**（单测覆盖） |
+| **VS Code 自己的解析结果** | 客户端连上后 VS Code 重新生成的 `extensions.builtin.cache`：**94 个内置扩展，id 含 "copilot" 的数量为 0**，且所有 location 都指向过滤目录 |
+| 界面 | 工作台活动栏**没有 Chat/Copilot 图标**、右侧**没有 Chat 面板**、欢迎页**没有 "Build with Agent" 卡片**（[截图](.verify/08-copilot-disabled.png)） |
+
 **仍未验证**：
 
 - 用真实密码登录 code-server 之后完整 VS Code 工作台的观感（登录页之后的界面属于 code-server 自身，与本插件无关）
@@ -263,6 +314,9 @@ dsh plugin --profile devtest add E:\it-project\DSHCodeServerView
 - 地址与密码走 cordis `Config`（见「配置」），但**没有 Settings 图形界面**：改配置要编辑补丁层里的 YAML。改 `config` 会 HMR 热替换宿主半部；**改插件源码需要重启 DSH**
 - **子模块是源码，不是可运行产物**：`vendor/code-server` 只有在上游被构建过（存在 `out/node/entry.js`）时才会被当作 `root`；否则必须用 `config.root` 指向现成 release。想在 Windows 上构建 code-server 需要 Node/yarn + VS Code 构建链，官方更推荐 WSL/Docker，成本高且易失败
 - 子进程服务不向外暴露 pid（"managed-range identities remain provider-private"），所以面板状态里没有 pid，只有状态、根目录、版本与退出码
+- **Copilot 禁用只在托管模式生效**：插件得自己 spawn 才能决定 argv 与数据目录；attach（接管你已有的实例）时不动任何东西，状态里写明原因
+- Copilot 层**不改发行版的 `product.json`**（那个激进项未实现），所以"连 Chat 的身份一起去掉"做不到——但扩展不再加载 + AI 功能开关 + 清理残留已经覆盖了实际使用面
+- 按扩展 id 排除需要读到每个候选目录的 `package.json`；读不出来的目录一律**保留**（不认识的东西绝不动）
 - 自动登录走的是「宿主渲染一个自动提交表单」这条路：它要求浏览器能**直接**访问 code-server 地址，且 code-server 的登录页必须是标准表单（code-server 4.x 是）
 - 内嵌的是 iframe：code-server 保留自己的主题与快捷键，不继承 DSH 的主题 token；焦点在面板内时快捷键由 VS Code 处理，可能与 DSH 冲突
 - 未加 `sandbox` 属性收紧（code-server 需要自身 origin 的存储与 WebSocket）；`allow` 仅开放剪贴板与全屏
