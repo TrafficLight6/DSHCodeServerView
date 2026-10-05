@@ -4,7 +4,7 @@
 
 在 DSH 里一边和模型对话，一边在同一个窗口里用完整的 VS Code 改代码、开终端。
 
-当前版本 **1.3.0** ｜ DSH `0.2.0-rc+` ｜ code-server `4.x`（实测 4.140.0）｜ 契约测试 **45 项**
+当前版本 **1.3.1** ｜ DSH `0.2.0-rc+` ｜ code-server `4.x`（实测 4.140.0）｜ 契约测试 **46 项**
 
 ---
 
@@ -32,6 +32,14 @@
 ## 安装
 
 下面示例里的 `D:\src\DSHCodeServerView`（本仓库）与 `D:\code-server`（code-server 安装目录）都是**占位示例**，请换成你自己的路径。占位形式说明：`<repo>` = 本仓库的绝对路径。
+
+> **链接安装前，先在本仓库装一次依赖。** 插件以 `link:`（目录链接）方式装进 profile 时，运行时是从**本仓库的真实路径**解析它的依赖的；桌面版（Electron）运行时不会替链接插件解析 DSH 自带库，所以仓库里必须有 `node_modules`：
+>
+> ```sh
+> npm install     # 唯一的运行时依赖：@deepseek-ai/schemastery
+> ```
+>
+> 漏掉这一步的症状是启用失败：`dsh: warning: 1 entry did not activate code-server-view (DSHCodeServerView): failed to import`。
 
 ### 方式 A：Desktop 应用（推荐）
 
@@ -252,7 +260,7 @@ git add vendor/code-server .gitmodules
 
 ```sh
 node --check index.js supervisor.js copilot.js client.js   # 语法
-node test/contract.test.mjs                                # 契约测试，45 项
+node test/contract.test.mjs                                # 契约测试，46 项
 node test/docs.test.mjs                                    # 文档检查，12 项
 npm test                                                   # 两者都跑
 ```
@@ -287,6 +295,7 @@ npm test                                                   # 两者都跑
 
 ## 已知限制
 
+- **目录链接安装需要先在本仓库 `npm install`**：链接安装（`link:`）时插件从本仓库真实路径解析依赖，而打包后的桌面（Electron）运行时不替链接插件解析 DSH 自带库；漏装的症状是 `failed to import`。以 tarball/实体方式装进 profile 的副本不受影响
 - **没有 Settings 图形界面**：配置走补丁层 YAML。改 `config` 会 HMR 热替换，**改插件源码需要重启 DSH**
 - **Copilot 层只在托管模式生效**，且**不改发行版的 `product.json`**（该激进项未实现）——所以"连 Chat 的身份一起去掉"做不到，命令面板里可能仍残留个别入口；扩展不加载 + AI 开关 + 清理已覆盖实际使用面
 - **子模块是源码不是可运行产物**：必须 `config.root` 指向现成 release，或在 Windows 上构建 code-server（成本高、易失败）
@@ -306,7 +315,7 @@ npm test                                                   # 两者都跑
 - **Copilot removal** (opt-in, no fork, installation untouched): a filtered `--builtin-extensions-dir` so Copilot is never loaded, the AI-off settings block merged into the user settings, and Copilot's caches purged. The filtered directory is keyed by a fingerprint, so an upgrade rebuilds it while an unchanged installation reuses it.
 - **Host routes** (loopback only): `GET /codeserver-view/config`, `GET /codeserver-view/login` (auto-submitting login, so the password never reaches the browser half), `POST /codeserver-view/restart`.
 - **code-server tracking**: a Git submodule pinned to `v4.140.0`, used as the version anchor; the submodule is source, not a runnable artifact.
-- Install with `dsh plugin --profile <name> add <this directory>`, or through the Desktop application's Plugins page. `npm test` runs the dependency-free contract test (45 checks) for both halves.
+- Install with `dsh plugin --profile <name> add <this directory>`, or through the Desktop application's Plugins page. A linked install (a directory link into this checkout) resolves its dependencies from this checkout, so run `npm install` here first — otherwise activation fails with `failed to import`. `npm test` runs the dependency-free contract test (46 checks) for both halves.
 
 ## License
 

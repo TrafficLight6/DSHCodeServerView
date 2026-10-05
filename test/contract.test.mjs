@@ -966,6 +966,30 @@ await checkAsync('a work directory inside the installation or the package is ref
   assert.equal(existsSync(join(packageDir, '.derived')), false, 'nothing is created inside the plugin package')
 })
 
+// A linked plugin (junction into this checkout) is imported from its real path,
+// where only this package's own node_modules is reachable. A bare import that is
+// merely a peer dependency is NOT installed for a link, so it fails at import
+// time in the packaged desktop runtime and surfaces as
+// "1 entry did not activate ... failed to import". Every bare import must
+// therefore be a real dependency.
+await checkAsync('every bare import in the shipped modules is a declared dependency', async () => {
+  const declared = new Set(Object.keys(manifest.dependencies ?? {}))
+  const peers = new Set(Object.keys(manifest.peerDependencies ?? {}))
+  const offenders = []
+  for (const file of ['index.js', 'supervisor.js', 'copilot.js']) {
+    const source = readFileSync(join(packageDir, file), 'utf8')
+    for (const match of source.matchAll(/^import\s[^'"]*['"]([^'"]+)['"]/gm)) {
+      const specifier = match[1]
+      if (specifier.startsWith('.') || specifier.startsWith('node:')) continue
+      const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0]
+      if (declared.has(name)) continue
+      offenders.push(`${file} imports ${name}${peers.has(name) ? ' (declared only as a peer)' : ''}`)
+    }
+  }
+  assert.equal(offenders.length, 0, `bare imports that a linked install cannot resolve: ${offenders.join('; ')}`)
+  assert.ok(declared.has('@deepseek-ai/schemastery'), 'schemastery must stay a real dependency for linked installs')
+})
+
 rmSync(fixtureRoot, { recursive: true, force: true })
 
 console.log(findings.join('\n'))

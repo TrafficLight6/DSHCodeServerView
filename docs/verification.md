@@ -4,7 +4,7 @@
 
 - 验证环境：Windows + DSH `0.2.0-rc.2`（安装版）+ code-server `4.140.0`。下文把本机路径写成占位：`<repo>` = 本仓库、`<code-server>` = code-server 安装根目录、`<temp>` = 临时目录
 - 全部在**隔离的临时 `DSH_HOME`** 里进行，未改动任何现有 profile
-- 契约测试：`npm test` → **45 项契约 + 12 项文档检查**（零依赖）
+- 契约测试：`npm test` → **46 项契约 + 12 项文档检查**（零依赖）
 
 ---
 
@@ -104,6 +104,32 @@ dsh plugin --profile devtest add <repo>
 - 插件不写任何位置的 git 状态：`workDir` 默认在仓库外（`$DSH_HOME\cache\code-server-view`），若被指进插件包或安装目录则拒绝执行
 
 ---
+
+## 九、一个只在打包桌面版出现的启动失败（1.3.1 修）
+
+**症状**（用户在二进制桌面发行版里启用插件时）：
+
+```
+dsh: warning: 1 entry did not activate code-server-view (DSHCodeServerView): failed to import
+```
+
+**复现**（与运行时无关，纯模块解析）：
+
+```sh
+node --input-type=module -e "await import('file:///<repo>/index.js')"
+# ERR_MODULE_NOT_FOUND: Cannot find package '@deepseek-ai/schemastery' imported from <repo>/index.js
+```
+
+**根因**：宿主半部的 `import Schema from '@deepseek-ai/schemastery'` 是裸包名。插件在 profile 里是**目录链接（junction）**，Node 会解析到**本仓库的真实路径**，再从那里逐级向上找 `node_modules`——本仓库当时没有 `node_modules`，其各级父目录也没有，于是解析失败。对比之下 `dshmarket` / `dsh-better-sidebar` 能正常加载，是因为它们在 profile 的 `node_modules` 里是**实体目录**，向上就能找到 `@deepseek-ai/schemastery`（桌面 profile 里是 3.18.4）。DSH 源码里确有一层"把链接插件的依赖按 profile 层解析"的拦截（`packages/boot/app-boot/src/profile-resolution/resolver.ts`），但打包桌面运行时没有生效——所以修法不能依赖它。
+
+**修法**：把 `@deepseek-ai/schemastery` 从 peer 同时也声明成**真实依赖**并在本仓库安装，让裸导入在真实路径下也能解析：
+
+```sh
+npm install     # @deepseek-ai/schemastery@3.18.4（与桌面 profile 里那份同版本）
+node --input-type=module -e "await import('file:///<repo>/index.js')"   # 现在 OK
+```
+
+**防复发**：契约测试新增一项——扫描宿主三个模块的所有裸导入，**每个都必须是清单里声明过的依赖**（`node:` 与相对路径除外）。
 
 ## 仍未验证
 
